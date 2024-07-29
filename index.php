@@ -1,352 +1,229 @@
 <?php
 
-
-$json_users_file = 'users.json';
-
-
-// Read JSON file
-$json_data = file_get_contents($json_users_file);
-
-// Decode JSON data into associative array
-$users = json_decode($json_data, true);
-
-
-$url = $_GET['url'] ?? "";
-
-
-// Trim trailing slashes and explode by '/'
-$url = rtrim($url, '/');
-$urlParts = explode('/', $url);
-
-// Define valid endpoints
-$validEndpoints = ["login", "details", "passwordchange"];
-
-// Check if the URL contains more than one part
-if (count($urlParts) > 1) {
-  // Bad request
-  http_response_code(400);
-  echo json_encode(array("msg" => "Bad Request: Invalid URL structure"));
-  exit(); // Stop further execution
+// Allow from any origin
+if (isset($_SERVER['HTTP_ORIGIN'])) {
+    // allow all origins
+    header("Access-Control-Allow-Origin: *");
+    header('Access-Control-Allow-Credentials: true');
 }
 
+// Access-Control headers are received during OPTIONS requests
+if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
+    if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'])) {
+        header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+    }
+    if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'])) {
+        header("Access-Control-Allow-Headers: {$_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']}");
+    }
+    exit(0);
+}
+
+// Trim trailing slashes and explode by '/'
+$url = ltrim(rtrim($_SERVER['REQUEST_URI'], '/'), '/');
+$validEndpoints = ["login", "details", "passwordchange", "logout"];
+
 // Check if the endpoint is valid
-$requestedEndpoint = $urlParts[0] ?? '';
-if (!in_array($requestedEndpoint, $validEndpoints)) {
-  // Invalid endpoint
-  http_response_code(404);
-  echo json_encode(array("msg" => "Not Found: Endpoint not supported"));
-  exit(); // Stop further execution
+if (!in_array($url, $validEndpoints)) {
+    header('Content-Type: application/json');
+    echo json_encode([
+        "error" => 1,
+        "msg" => "Endpoint not found",
+        "data" => []
+    ]);
+    exit();
 }
 
 // Handle each endpoint
-switch ($requestedEndpoint) {
-  case 'login':
-    // Handle login endpoint
-    login();
-    break;
-  case 'details':
-    // Handle details endpoint
-    details();
-    break;
-  case 'passwordchange':
-    // Handle passwordchange endpoint
-    passwordChange();
-    break;
-  default:
-    // Should not reach here if validEndpoints array is correctly defined
-    http_response_code(500);
-    echo json_encode(array("msg" => "Internal Server Error"));
-    break;
+switch ($url) {
+    case 'login':
+        login();
+        break;
+    case 'details':
+        details();
+        break;
+    case 'passwordchange':
+        passwordChange();
+        break;
+    case 'logout':
+        logout();
+        break;
+    default:
+        http_response_code(500);
+        echo json_encode([
+            "error" => 1,
+            "msg" => "Internal Server Error",
+            "data" => []
+        ]);
+        break;
 }
 
 function login()
 {
-  if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(400);
-    header('Content-Type: application/json');
-    echo json_encode(array("error" => "1", "msg" => "Invalid request method"));
-    exit();
-  }
-
-  $users_file = 'users.json';
-  $json_data = file_get_contents($users_file);
-  $users = json_decode($json_data, true);
-
-  if ($users === null && json_last_error() !== JSON_ERROR_NONE) {
-    http_response_code(400);
-    header('Content-Type: application/json');
-    $user_data = [
-      "error" => 1,
-      "msg" => "User data not found!",
-      "data" => []
-    ];
-
-    echo json_encode($user_data);
-    exit();
-  }
-
-  $input_data = json_decode(file_get_contents('php://input'), true);
-  $email = $input_data['email'] ?? "";
-  $password = $input_data['password'] ?? "";
-
-  foreach ($users as $user_key => $data) {
-
-    $user = $data['info'];
-
-    if ($user['email'] === $email && $user['password'] === $password) {
-
-      $new_login_token =  base64_encode(random_bytes(32));
-
-      $user['token'] = $new_login_token;
-
-      $users[$user_key]['info'] = $user;
-
-      file_put_contents($users_file, json_encode($users, JSON_PRETTY_PRINT));
-
-      http_response_code(400);
-      header('Content-Type: application/json');
-      $user_data = [
-        "error" => 0,
-        "msg" => "Success",
-        "data" => [
-          'token' => $new_login_token
-        ]
-      ];
-
-      echo json_encode($user_data);
-      exit();
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        respondError("Invalid request method");
     }
-  }
 
-  http_response_code(400);
-  header('Content-Type: application/json');
-  $user_data = [
-    "error" => 1,
-    "msg" => "Invalid email or password",
-    "data" => []
-  ];
-  echo json_encode($user_data);
+    $users_file = 'users.json';
+    $users = loadUsers($users_file);
 
-  exit();
+    $input_data = json_decode(file_get_contents('php://input'), true);
+    $email = $input_data['email'] ?? "";
+    $password = $input_data['password'] ?? "";
+
+    foreach ($users as $user_key => &$user) {
+        if ($user['info']['email'] === $email && $user['info']['password'] === $password) {
+            $new_login_token = base64_encode(random_bytes(32));
+            $user['info']['token'] = $new_login_token;
+            saveUsers($users_file, $users);
+            respondSuccess([
+                'token' => $new_login_token
+            ]);
+        }
+    }
+
+    respondError("Invalid email or password");
 }
 
 function details()
 {
-
-  ini_set('display_errors', 1);
-  error_reporting(E_ALL);
-
-  $headers = getallheaders();
-  if (!isset($headers['Authorization'])) {
-    http_response_code(401);
-    header('Content-Type: application/json');
-    $user_data = [
-      "error" => 1,
-      "msg" => "Authorization header not found",
-      "data" => []
-    ];
-    echo json_encode($user_data);
-    exit();
-  }
-
-
-  $auth_header = $headers['Authorization'];
-  list($type, $token) = explode(' ', $auth_header, 2);
-
-  if ($type !== 'Bearer' || empty($token)) {
-    http_response_code(401);
-    header('Content-Type: application/json');
-    $user_data = [
-      "error" => 1,
-      "msg" => "Invalid token",
-      "data" => []
-    ];
-    echo json_encode($user_data);
-    exit();
-  }
-
-  $users_file = 'users.json';
-  $json_data = file_get_contents($users_file);
-  $users = json_decode($json_data, true);
-  $validate_token = false;
-
-  foreach ($users as $key => $data) {
-
-    $validate_token = true;
-
-    if ($data['info']['token'] === $token) {
-
-      unset($data['info']['token']);
-      unset($data['info']['password']);
-
-      http_response_code(200);
-      header('Content-Type: application/json');
-      $user_data = [
-        "error" => 0,
-        "msg" => "success",
-        "data" => $data
-      ];
-
-      echo json_encode($user_data);
-      exit();
+    $headers = getallheaders();
+    if (!isset($headers['Authorization'])) {
+        respondError("Authorization header not found");
     }
-  }
 
-  // Invalid token
-  if (!$validate_token) {
-    http_response_code(401);
-    header('Content-Type: application/json');
-    $response = [
-      "error" => 1,
-      "msg" => "Unauthorized access",
-      "data" => []
-    ];
-    echo json_encode($response);
-    exit();
-  }
+    $auth_header = $headers['Authorization'];
+    list($type, $token) = explode(' ', $auth_header, 2);
 
-  http_response_code(401);
-  header('Content-Type: application/json');
-  $user_data = [
-    "error" => 1,
-    "msg" => "Invalid token",
-    "data" => []
-  ];
-  echo json_encode($user_data);
-  exit();
+    if ($type !== 'Bearer' || empty($token)) {
+        respondError("Invalid token");
+    }
+
+    $users_file = 'users.json';
+    $users = loadUsers($users_file);
+
+    foreach ($users as &$user) {
+        if ($user['info']['token'] === $token) {
+            $data = $user;
+            unset($data['info']['token']);
+            unset($data['info']['password']);
+            respondSuccess($data);
+        }
+    }
+
+    respondError("Unauthorized access");
 }
 
 function passwordChange()
 {
-  // Ensure errors are displayed during debugging
-  ini_set('display_errors', 1);
-  error_reporting(E_ALL);
-
-  // Check if Authorization header exists
-  $headers = getallheaders();
-  if (!isset($headers['Authorization'])) {
-    http_response_code(401);
-    header('Content-Type: application/json');
-    $response = [
-      "error" => 1,
-      "msg" => "Authorization header not found",
-      "data" => []
-    ];
-    echo json_encode($response);
-    exit();
-  }
-
-  // Extract token from Authorization header
-  $auth_header = $headers['Authorization'];
-  list($type, $token) = explode(' ', $auth_header, 2);
-
-  // Validate Bearer token format
-  if ($type !== 'Bearer' || empty($token)) {
-    http_response_code(401);
-    header('Content-Type: application/json');
-    $response = [
-      "error" => 1,
-      "msg" => "Invalid token",
-      "data" => []
-    ];
-    echo json_encode($response);
-    exit();
-  }
-
-  // Read JSON input data
-  $json_data = file_get_contents('php://input');
-  $requestData = json_decode($json_data, true);
-
-  // Validate required fields
-  $current_password = isset($requestData['current_password']) ? $requestData['current_password'] : "";
-  $new_password = isset($requestData['new_password']) ? $requestData['new_password'] : "";
-  $confirm_password = isset($requestData['confirm_password']) ? $requestData['confirm_password'] : "";
-
-  if (empty($current_password) || empty($new_password) || empty($confirm_password)) {
-    http_response_code(400);
-    header('Content-Type: application/json');
-    $response = [
-      "error" => 1,
-      "msg" => "Current password, new password, and confirm password are required",
-      "data" => []
-    ];
-    echo json_encode($response);
-    exit();
-  }
-
-  // Load users data from file
-  $users_file = 'users.json';
-  $json_data = file_get_contents($users_file);
-  $users = json_decode($json_data, true);
-
-  $validate_token = false;
-
-  // Find user by token and validate passwords
-  foreach ($users as $user_key => &$user) {
-    if ($user['info']['token'] === $token) {
-      $validate_token = true;
-
-      if ($user['info']['password'] !== $current_password) {
-        http_response_code(401);
-        header('Content-Type: application/json');
-        $response = [
-          "error" => 1,
-          "msg" => "The current password does not match",
-          "data" => []
-        ];
-        echo json_encode($response);
-        exit();
-      }
-
-      if ($new_password !== $confirm_password) {
-        http_response_code(401);
-        header('Content-Type: application/json');
-        $response = [
-          "error" => 1,
-          "msg" => "The new password and the confirm password do not match",
-          "data" => []
-        ];
-        echo json_encode($response);
-        exit();
-      }
-
-      // Update user's password and save back to file
-      $user['info']['password'] = $new_password;
-      file_put_contents($users_file, json_encode($users, JSON_PRETTY_PRINT));
-
-      http_response_code(200);
-      header('Content-Type: application/json');
-      $response = [
-        "error" => 0,
-        "msg" => "Password successfully updated",
-        "data" => []
-      ];
-      echo json_encode($response);
-      exit();
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        respondError("Invalid request method");
     }
-  }
 
-  // Invalid token
-  if (!$validate_token) {
-    http_response_code(401);
+    $headers = getallheaders();
+    if (!isset($headers['Authorization'])) {
+        respondError("Authorization header not found");
+    }
+
+    $auth_header = $headers['Authorization'];
+    list($type, $token) = explode(' ', $auth_header, 2);
+
+    if ($type !== 'Bearer' || empty($token)) {
+        respondError("Invalid token");
+    }
+
+    $json_data = file_get_contents('php://input');
+    $requestData = json_decode($json_data, true);
+
+    $current_password = $requestData['current_password'] ?? "";
+    $new_password = $requestData['new_password'] ?? "";
+    $confirm_password = $requestData['confirm_password'] ?? "";
+
+    if (empty($current_password) || empty($new_password) || empty($confirm_password)) {
+        respondError("Current password, new password, and confirm password are required");
+    }
+
+    $users_file = 'users.json';
+    $users = loadUsers($users_file);
+
+    foreach ($users as $user_key => &$user) {
+        if ($user['info']['token'] === $token) {
+            if ($user['info']['password'] !== $current_password) {
+                respondError("The current password does not match");
+            }
+            if ($new_password !== $confirm_password) {
+                respondError("The new password and the confirm password do not match");
+            }
+            $user['info']['password'] = $new_password;
+            saveUsers($users_file, $users);
+            respondSuccess("Password successfully updated");
+        }
+    }
+
+    respondError("Unauthorized access");
+}
+
+function logout()
+{
+    $headers = getallheaders();
+    if (!isset($headers['Authorization'])) {
+        respondError("Authorization header not found");
+    }
+
+    $auth_header = $headers['Authorization'];
+    list($type, $token) = explode(' ', $auth_header, 2);
+
+    if ($type !== 'Bearer' || empty($token)) {
+        respondError("Invalid token");
+    }
+
+    $users_file = 'users.json';
+    $users = loadUsers($users_file);
+
+    foreach ($users as $user_key => &$user) {
+        if ($user['info']['token'] === $token) {
+            respondSuccess("Success");
+        }
+    }
+
+    respondError("Unauthorized access");
+}
+
+function loadUsers($file)
+{
+    $json_data = file_get_contents($file);
+    if ($json_data === false) {
+        respondError("User data not found");
+    }
+    $users = json_decode($json_data, true);
+    if ($users === null || json_last_error() !== JSON_ERROR_NONE) {
+        respondError("Invalid user data format");
+    }
+    return $users;
+}
+
+function saveUsers($file, $users)
+{
+    file_put_contents($file, json_encode($users, JSON_PRETTY_PRINT));
+}
+
+function respondSuccess($data)
+{
     header('Content-Type: application/json');
-    $response = [
-      "error" => 401,
-      "msg" => "Unauthorized access",
-      "data" => []
-    ];
-    echo json_encode($response);
+    echo json_encode([
+        "error" => 0,
+        "msg" => "Success",
+        "data" => $data
+    ]);
     exit();
-  }
+}
 
-  // If no user found with the provided token
-  http_response_code(401);
-  header('Content-Type: application/json');
-  $response = [
-    "error" => 1,
-    "msg" => "Password update failed!",
-    "data" => []
-  ];
-  echo json_encode($response);
-  exit();
+function respondError($message)
+{
+    header('Content-Type: application/json');
+    echo json_encode([
+        "error" => 1,
+        "msg" => $message,
+        "data" => []
+    ]);
+    exit();
 }
